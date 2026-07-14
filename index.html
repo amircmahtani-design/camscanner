@@ -106,8 +106,8 @@
 
   #crop-stage{flex:1;position:relative;overflow:hidden;background:#07090c;
     display:flex;align-items:center;justify-content:center;}
-  #crop-holder{position:relative;max-width:100%;max-height:100%;}
-  #crop-img{display:block;max-width:100%;max-height:calc(100vh - 210px);width:auto;height:auto;}
+  #crop-holder{position:relative;display:inline-block;line-height:0;}
+  #crop-img{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 210px);max-height:calc(100dvh - 210px);}
   #crop-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}
   .handle{fill:#fff;stroke:var(--accent);stroke-width:3;cursor:grab;}
   .handle-hit{fill:transparent;stroke:none;}
@@ -406,7 +406,7 @@
           S.capture={ imageEl:work, w:work.naturalWidth, h:work.naturalHeight };
           S.cropRotation=0; S.editIndex=-1;
           const ci=$("crop-img");
-          ci.onload=()=>{ try{ setupCrop(insetCorners()); stopCamera(); overlay(false); show("crop"); }catch(e){ fail(e); } };
+          ci.onload=()=>{ try{ stopCamera(); overlay(false); show("crop"); measureAndSetup(0); }catch(e){ fail(e); } };
           ci.onerror=()=>fail("crop-img");
           ci.src=workURL;
         };
@@ -427,12 +427,16 @@
   }
   function fullCorners(){ const d=dispRect(); return [ {x:0,y:0},{x:d.w,y:0},{x:d.w,y:d.h},{x:0,y:d.h} ]; }
 
+  // measure only once the crop screen is actually visible; retry until layout is ready
+  function measureAndSetup(tries){
+    tries=tries||0;
+    const d=dispRect();
+    if((d.w<5 || d.h<5) && tries<20){ requestAnimationFrame(()=>measureAndSetup(tries+1)); return; }
+    setupCrop(insetCorners());
+  }
+
   function setupCrop(corners){
     S.corners=corners;
-    // size svg holder to image
-    const ci=$("crop-img");
-    $("crop-holder").style.width=ci.getBoundingClientRect().width+"px";
-    $("crop-holder").style.height=ci.getBoundingClientRect().height+"px";
     renderHandles();
     drawQuad();
   }
@@ -523,7 +527,7 @@
         img.onload=()=>{
           S.capture={imageEl:img,w:img.naturalWidth,h:img.naturalHeight};
           const ci=$("crop-img");
-          ci.onload=()=>{ setupCrop(insetCorners()); overlay(false); };
+          ci.onload=()=>{ measureAndSetup(0); overlay(false); };
           ci.onerror=()=>{ overlay(false); toast("Rotate failed"); };
           ci.src=url;
         };
