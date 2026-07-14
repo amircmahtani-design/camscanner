@@ -106,8 +106,8 @@
 
   #crop-stage{flex:1;position:relative;overflow:hidden;background:#07090c;
     display:flex;align-items:center;justify-content:center;}
-  #crop-holder{position:relative;}
-  #crop-img{display:block;max-width:100%;}
+  #crop-holder{position:relative;max-width:100%;max-height:100%;}
+  #crop-img{display:block;max-width:100%;max-height:calc(100vh - 210px);width:auto;height:auto;}
   #crop-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}
   .handle{fill:#fff;stroke:var(--accent);stroke-width:3;cursor:grab;}
   .handle-hit{fill:transparent;stroke:none;}
@@ -330,12 +330,16 @@
   let toastT;
   function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove("show"),1800); }
 
+  // never leave the app stuck behind a spinner on an unexpected error
+  window.addEventListener("error", e=>{ overlay(false); toast("Something went wrong"); console.error(e.error||e.message); });
+  window.addEventListener("unhandledrejection", e=>{ overlay(false); console.error(e.reason); });
+
   // ---------------- camera ----------------
   async function startCamera(){
     stopCamera();
     try{
       S.stream = await navigator.mediaDevices.getUserMedia({
-        video:{ facingMode:{ ideal:S.facing }, width:{ideal:4096}, height:{ideal:4096} },
+        video:{ facingMode:{ ideal:S.facing }, width:{ideal:2560}, height:{ideal:2560} },
         audio:false
       });
       const v=$("video"); v.srcObject=S.stream; await v.play().catch(()=>{});
@@ -353,11 +357,19 @@
     const v=$("video");
     if(!v.videoWidth){ toast("Camera not ready"); return; }
     const sh=$("shutter"); sh.classList.add("busy");
-    const c=document.createElement("canvas");
-    c.width=v.videoWidth; c.height=v.videoHeight;
-    c.getContext("2d").drawImage(v,0,0,c.width,c.height);
-    const url=c.toDataURL("image/jpeg",0.95);
-    setTimeout(()=>{ sh.classList.remove("busy"); loadForCrop(url); }, 60);
+    overlay(true,"Preparing…");
+    setTimeout(()=>{
+      try{
+        const c=document.createElement("canvas");
+        c.width=v.videoWidth; c.height=v.videoHeight;
+        c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+        const url=c.toDataURL("image/jpeg",0.92);
+        sh.classList.remove("busy");
+        loadForCrop(url);
+      }catch(e){
+        sh.classList.remove("busy"); overlay(false); toast("Capture failed — try again"); console.error(e);
+      }
+    }, 60);
   };
 
   // import from photos
@@ -372,15 +384,38 @@
   };
 
   // ---------------- load image into crop ----------------
+  const MAX_CAPTURE = 2400;   // cap long edge so processing stays fast & memory-light
   function loadForCrop(dataURL){
-    const img=new Image();
-    img.onload=()=>{
-      S.capture={ imageEl:img, w:img.naturalWidth, h:img.naturalHeight };
-      S.cropRotation=0; S.editIndex=-1;
-      const ci=$("crop-img"); ci.src=dataURL;
-      ci.onload=()=>{ setupCrop(insetCorners()); show("crop"); };
+    overlay(true,"Preparing…");
+    const fail=(e)=>{ overlay(false); toast("Couldn't open that photo"); console.error("loadForCrop",e); backToCamera(); };
+    const probe=new Image();
+    probe.onload=()=>{
+      try{
+        let workURL=dataURL;
+        const long=Math.max(probe.naturalWidth, probe.naturalHeight);
+        if(long>MAX_CAPTURE){
+          const s=MAX_CAPTURE/long;
+          const cw=Math.round(probe.naturalWidth*s), ch=Math.round(probe.naturalHeight*s);
+          const c=document.createElement("canvas"); c.width=cw; c.height=ch;
+          c.getContext("2d").drawImage(probe,0,0,cw,ch);
+          workURL=c.toDataURL("image/jpeg",0.92);
+        }
+        // decode the working image fully, THEN wire crop-img (onload set before src to avoid a race)
+        const work=new Image();
+        work.onload=()=>{
+          S.capture={ imageEl:work, w:work.naturalWidth, h:work.naturalHeight };
+          S.cropRotation=0; S.editIndex=-1;
+          const ci=$("crop-img");
+          ci.onload=()=>{ try{ setupCrop(insetCorners()); stopCamera(); overlay(false); show("crop"); }catch(e){ fail(e); } };
+          ci.onerror=()=>fail("crop-img");
+          ci.src=workURL;
+        };
+        work.onerror=()=>fail("work");
+        work.src=workURL;
+      }catch(e){ fail(e); }
     };
-    img.src=dataURL;
+    probe.onerror=()=>fail("probe");
+    probe.src=dataURL;
   }
 
   // corners are stored in DISPLAY coordinates of #crop-img
@@ -476,17 +511,25 @@
     // rotate the underlying capture 90° CW, rebuild image
     overlay(true,"Rotating…");
     setTimeout(()=>{
-      const src=S.capture.imageEl;
-      const c=document.createElement("canvas");
-      c.width=src.naturalHeight; c.height=src.naturalWidth;
-      const ctx=c.getContext("2d");
-      ctx.translate(c.width,0); ctx.rotate(Math.PI/2);
-      ctx.drawImage(src,0,0);
-      const url=c.toDataURL("image/jpeg",0.95);
-      const img=new Image();
-      img.onload=()=>{ S.capture={imageEl:img,w:img.naturalWidth,h:img.naturalHeight};
-        const ci=$("crop-img"); ci.src=url; ci.onload=()=>{ setupCrop(insetCorners()); overlay(false); }; };
-      img.src=url;
+      try{
+        const src=S.capture.imageEl;
+        const c=document.createElement("canvas");
+        c.width=src.naturalHeight; c.height=src.naturalWidth;
+        const ctx=c.getContext("2d");
+        ctx.translate(c.width,0); ctx.rotate(Math.PI/2);
+        ctx.drawImage(src,0,0);
+        const url=c.toDataURL("image/jpeg",0.92);
+        const img=new Image();
+        img.onload=()=>{
+          S.capture={imageEl:img,w:img.naturalWidth,h:img.naturalHeight};
+          const ci=$("crop-img");
+          ci.onload=()=>{ setupCrop(insetCorners()); overlay(false); };
+          ci.onerror=()=>{ overlay(false); toast("Rotate failed"); };
+          ci.src=url;
+        };
+        img.onerror=()=>{ overlay(false); toast("Rotate failed"); };
+        img.src=url;
+      }catch(e){ overlay(false); toast("Rotate failed"); console.error(e); }
     },30);
   }
 
@@ -637,11 +680,13 @@
   $("crop-next").onclick=()=>{
     overlay(true,"Cropping…");
     setTimeout(()=>{
-      const warped=warpToCanvas();
-      S.croppedColor=warped.toDataURL("image/jpeg",0.92);
-      S.croppedDims={ w:warped.width, h:warped.height };
-      overlay(false);
-      openFilter(S.pendingFilter);
+      try{
+        const warped=warpToCanvas();
+        S.croppedColor=warped.toDataURL("image/jpeg",0.92);
+        S.croppedDims={ w:warped.width, h:warped.height };
+        overlay(false);
+        openFilter(S.pendingFilter);
+      }catch(e){ overlay(false); toast("Something went wrong — try again"); console.error("warp",e); }
     },30);
   };
 
